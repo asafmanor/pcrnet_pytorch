@@ -1,21 +1,18 @@
 import argparse
 import os
-import sys
-import logging
+
 import numpy
 import numpy as np
 import torch
 import torch.utils.data
-import torchvision
-from torch.utils.data import DataLoader
+import transforms3d
 from tensorboardX import SummaryWriter
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from pcrnet.models import PointNet
-from pcrnet.models import iPCRNet
+from pcrnet.data_utils import ModelNet40Data, RegistrationData
 from pcrnet.losses import ChamferDistanceLoss
-from pcrnet.data_utils import RegistrationData, ModelNet40Data
-
+from pcrnet.models import PointNet, iPCRNet
 from samplenet import SampleNet, sputils
 
 
@@ -53,57 +50,106 @@ def do_samplenet_magic(model, template, source, args):
         source, simp_template, args.num_out_points, args.gamma, args.delta
     )
 
-    simp_loss = 0.5 * (
-        simp_source_loss + simp_template_loss
-    )
+    simp_loss = 0.5 * (simp_source_loss + simp_template_loss)
     proj_loss = model.sampler.get_projection_loss()
 
     # Prepare outputs
     samplenet_loss = args.alpha * simp_loss + args.lmbda * proj_loss
-    samplenet_info = {
-        "simp_loss": simp_loss,
-        "proj_loss": proj_loss
-    }
+    samplenet_info = {"simp_loss": simp_loss, "proj_loss": proj_loss}
     sampled_data = (proj_template, proj_source)
 
     return samplenet_loss, sampled_data, samplenet_info
 
 
-def test_one_epoch(device, model, test_loader, args):
+# Find error metrics.
+def find_errors(igt_R, pred_R, igt_t, pred_t):
+    # igt_R:				Rotation matrix [3, 3] (source = igt_R * template)
+    # pred_R: 			Registration algorithm's rotation matrix [3, 3] (template = pred_R * source)
+    # igt_t:				translation vector [1, 3] (source = template + igt_t)
+    # pred_t: 			Registration algorithm's translation matrix [1, 3] (template = source + pred_t)
+
+    # Euler distance between ground truth translation and predicted translation.
+    igt_t = -np.matmul(igt_R.T, igt_t.T).T  # gt translation vector (source -> template)
+    translation_error = np.sqrt(np.sum(np.square(igt_t - pred_t)))
+
+    # Convert matrix remains to axis angle representation and report the angle as rotation error.
+    error_mat = np.dot(igt_R, pred_R)  # matrix remains [3, 3]
+    _, angle = transforms3d.axangles.mat2axangle(error_mat)
+    return translation_error, abs(angle * (180 / np.pi))
+
+
+def compute_accuracy(igt_R, pred_R, igt_t, pred_t):
+    errors_temp = []
+    for igt_R_i, pred_R_i, igt_t_i, pred_t_i in zip(igt_R, pred_R, igt_t, pred_t):
+        errors_temp.append(find_errors(igt_R_i, pred_R_i, igt_t_i, pred_t_i))
+    return np.mean(errors_temp, axis=0)
+
+
+def test_one_epoch(device, model, test_loader):
     model.eval()
     test_loss = 0.0
-    pred = 0.0
     count = 0
+    errors = []
+
     for i, data in enumerate(tqdm(test_loader)):
-        template, source, igt = data
+        template, source, igt, igt_R, igt_t = data
 
         template = template.to(device)
         source = source.to(device)
         igt = igt.to(device)
 
-        # mean substraction
+        # source_original = source.clone()
+        # template_original = template.clone()
+        igt_t = igt_t - torch.mean(source, dim=1).unsqueeze(1)
         source = source - torch.mean(source, dim=1, keepdim=True)
         template = template - torch.mean(template, dim=1, keepdim=True)
 
         output = model(template, source)
+        est_R = output["est_R"]
+        est_t = output["est_t"]
+
+        errors.append(
+            compute_accuracy(
+                igt_R.detach().cpu().numpy(),
+                est_R.detach().cpu().numpy(),
+                igt_t.detach().cpu().numpy(),
+                est_t.detach().cpu().numpy(),
+            )
+        )
+
+        # transformed_source = (
+        #     torch.bmm(est_R, source.permute(0, 2, 1)).permute(0, 2, 1) + est_t
+        # )
+        # display_open3d(
+        #     template.detach().cpu().numpy()[0],
+        #     source_original.detach().cpu().numpy()[0],
+        #     transformed_source.detach().cpu().numpy()[0],
+        # )
+
         loss_val = ChamferDistanceLoss()(template, output["transformed_source"])
 
         test_loss += loss_val.item()
         count += 1
 
     test_loss = float(test_loss) / count
-    return test_loss
+    errors = np.mean(np.array(errors), axis=0)
+    return test_loss, errors[0], errors[1]
 
 
-def test(args, model, test_loader, textio):
-    test_loss = test_one_epoch(args.device, model, test_loader, args)
-    textio.cprint("Validation Loss: %f & Validation Accuracy: %f" % test_loss)
+def test(args, model, test_loader):
+    test_loss, translation_error, rotation_error = test_one_epoch(
+        args.device, model, test_loader
+    )
+    print(
+        "Test Loss: {}, Rotation Error: {} & Translation Error: {}".format(
+            test_loss, rotation_error, translation_error
+        )
+    )
 
 
 def train_one_epoch(device, model, train_loader, optimizer, args):
     model.train()
     train_loss = 0.0
-    pred = 0.0
     count = 0
     for i, data in enumerate(tqdm(train_loader)):
         template, source, igt = data
@@ -119,7 +165,9 @@ def train_one_epoch(device, model, train_loader, optimizer, args):
         # sampling
         if model.sampler is not None:
             if model.sampler.name == "samplenet":
-                samplenet_loss, sampled_data, samplenet_info = do_samplenet_magic(model, template, source, args)
+                samplenet_loss, sampled_data, samplenet_info = do_samplenet_magic(
+                    model, template, source, args
+                )
                 template, source = sampled_data
         else:
             samplenet_loss = torch.tensor(0, dtype=torch.float32)
@@ -149,7 +197,7 @@ def train(args, model, train_loader, test_loader, boardio, textio, checkpoint):
         optimizer = torch.optim.SGD(learnable_params, lr=0.1)
 
     if checkpoint is not None:
-        min_loss = checkpoint["min_loss"]
+        # min_loss = checkpoint["min_loss"]
         optimizer.load_state_dict(checkpoint["optimizer"])
 
     best_test_loss = np.inf
@@ -312,10 +360,12 @@ def options(parser=None):
     )
 
     parser.add_argument("--sampler", default=None, type=str)
-    parser.add_argument('--train-pcrnet', action='store_true',
-                        help='Allow PCRNet training.')
-    parser.add_argument('--train-samplenet', action='store_true',
-                        help='Allow SampleNet training.')
+    parser.add_argument(
+        "--train-pcrnet", action="store_true", help="Allow PCRNet training."
+    )
+    parser.add_argument(
+        "--train-samplenet", action="store_true", help="Allow SampleNet training."
+    )
     args = parser.parse_args()
     return args
 
