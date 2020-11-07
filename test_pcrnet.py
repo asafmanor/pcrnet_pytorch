@@ -1,28 +1,20 @@
-import argparse
-import logging
 import os
-import sys
 
 import numpy
 import numpy as np
 import open3d as o3d
 import torch
 import torch.utils.data
-import torchvision
 import transforms3d
-from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-# Only if the files are in example folder.
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR[-8:] == "examples":
-    sys.path.append(os.path.join(BASE_DIR, os.pardir))
-    os.chdir(os.path.join(BASE_DIR, os.pardir))
 
 from pcrnet.data_utils import ModelNet40Data, RegistrationData
 from pcrnet.losses import ChamferDistanceLoss
 from pcrnet.models import PointNet, iPCRNet
+from train_pcrnet import SampleNet, do_samplenet_magic
+from train_pcrnet import options as train_options
+from train_pcrnet import sputils
 
 
 def display_open3d(template, source, transformed_source):
@@ -62,10 +54,9 @@ def compute_accuracy(igt_R, pred_R, igt_t, pred_t):
     return np.mean(errors_temp, axis=0)
 
 
-def test_one_epoch(device, model, test_loader):
+def test_one_epoch(device, model, test_loader, args):
     model.eval()
     test_loss = 0.0
-    pred = 0.0
     count = 0
     errors = []
 
@@ -76,11 +67,22 @@ def test_one_epoch(device, model, test_loader):
         source = source.to(device)
         igt = igt.to(device)
 
-        source_original = source.clone()
-        template_original = template.clone()
+        # source_original = source.clone()
+        # template_original = template.clone()
         igt_t = igt_t - torch.mean(source, dim=1).unsqueeze(1)
         source = source - torch.mean(source, dim=1, keepdim=True)
         template = template - torch.mean(template, dim=1, keepdim=True)
+
+        # sampling
+        if model.sampler is not None:
+            if model.sampler.name == "samplenet":
+                samplenet_loss, sampled_data, samplenet_info = do_samplenet_magic(
+                    model, template, source, args
+                )
+                template, source = sampled_data
+        else:
+            # samplenet_loss = torch.tensor(0, dtype=torch.float32)
+            pass
 
         output = model(template, source)
         est_R = output["est_R"]
@@ -95,14 +97,14 @@ def test_one_epoch(device, model, test_loader):
             )
         )
 
-        transformed_source = (
-            torch.bmm(est_R, source.permute(0, 2, 1)).permute(0, 2, 1) + est_t
-        )
-        display_open3d(
-            template.detach().cpu().numpy()[0],
-            source_original.detach().cpu().numpy()[0],
-            transformed_source.detach().cpu().numpy()[0],
-        )
+        # transformed_source = (
+        #     torch.bmm(est_R, source.permute(0, 2, 1)).permute(0, 2, 1) + est_t
+        # )
+        # display_open3d(
+        #     template.detach().cpu().numpy()[0],
+        #     source_original.detach().cpu().numpy()[0],
+        #     transformed_source.detach().cpu().numpy()[0],
+        # )
 
         loss_val = ChamferDistanceLoss()(template, output["transformed_source"])
 
@@ -116,7 +118,7 @@ def test_one_epoch(device, model, test_loader):
 
 def test(args, model, test_loader):
     test_loss, translation_error, rotation_error = test_one_epoch(
-        args.device, model, test_loader
+        args.device, model, test_loader, args
     )
     print(
         "Test Loss: {}, Rotation Error: {} & Translation Error: {}".format(
@@ -126,89 +128,8 @@ def test(args, model, test_loader):
 
 
 def options():
-    parser = argparse.ArgumentParser(description="Point Cloud Registration")
-    parser.add_argument(
-        "--exp_name",
-        type=str,
-        default="exp_ipcrnet",
-        metavar="N",
-        help="Name of the experiment",
-    )
-    parser.add_argument(
-        "--dataset_path",
-        type=str,
-        default="ModelNet40",
-        metavar="PATH",
-        help="path to the input dataset",
-    )  # like '/path/to/ModelNet40'
-    parser.add_argument(
-        "--eval", type=bool, default=False, help="Train or Evaluate the network."
-    )
-
-    # settings for input data
-    parser.add_argument(
-        "--dataset_type",
-        default="modelnet",
-        choices=["modelnet", "shapenet2"],
-        metavar="DATASET",
-        help="dataset type (default: modelnet)",
-    )
-    parser.add_argument(
-        "--num_points",
-        default=1024,
-        type=int,
-        metavar="N",
-        help="points in point-cloud (default: 1024)",
-    )
-
-    # settings for PointNet
-    parser.add_argument(
-        "--emb_dims",
-        default=1024,
-        type=int,
-        metavar="K",
-        help="dim. of the feature vector (default: 1024)",
-    )
-    parser.add_argument(
-        "--symfn",
-        default="max",
-        choices=["max", "avg"],
-        help="symmetric function (default: max)",
-    )
-
-    # settings for on training
-    parser.add_argument(
-        "-j",
-        "--workers",
-        default=4,
-        type=int,
-        metavar="N",
-        help="number of data loading workers (default: 4)",
-    )
-    parser.add_argument(
-        "-b",
-        "--batch_size",
-        default=20,
-        type=int,
-        metavar="N",
-        help="mini-batch size (default: 32)",
-    )
-    parser.add_argument(
-        "--pretrained",
-        default="pcrnet/pretrained/exp_ipcrnet/models/best_model.t7",
-        type=str,
-        metavar="PATH",
-        help="path to pretrained model file (default: null (no-use))",
-    )
-    parser.add_argument(
-        "--device",
-        default="cuda:0",
-        type=str,
-        metavar="DEVICE",
-        help="use CUDA if available",
-    )
-
-    args = parser.parse_args()
+    parser = sputils.get_parser()
+    args = train_options(parser)
     return args
 
 
@@ -231,6 +152,28 @@ def main():
     # Create PointNet Model.
     ptnet = PointNet(emb_dims=args.emb_dims)
     model = iPCRNet(feature_model=ptnet)
+
+    # Create sampler
+    if args.sampler == "samplenet":
+        sampler = SampleNet(
+            args.num_out_points,
+            args.bottleneck_size,
+            args.group_size,
+            skip_projection=args.skip_projection,
+            input_shape="bnc",
+            output_shape="bnc",
+        )
+        if args.train_samplenet:
+            sampler.requires_grad_(True)
+            sampler.train()
+        else:
+            sampler.requires_grad_(False)
+            sampler.eval()
+    else:
+        sampler = None
+
+    model.sampler = sampler
+
     model = model.to(args.device)
 
     if args.pretrained:
