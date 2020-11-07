@@ -61,30 +61,6 @@ def do_samplenet_magic(model, template, source, args):
     return samplenet_loss, sampled_data, samplenet_info
 
 
-# Find error metrics.
-def find_errors(igt_R, pred_R, igt_t, pred_t):
-    # igt_R:				Rotation matrix [3, 3] (source = igt_R * template)
-    # pred_R: 			Registration algorithm's rotation matrix [3, 3] (template = pred_R * source)
-    # igt_t:				translation vector [1, 3] (source = template + igt_t)
-    # pred_t: 			Registration algorithm's translation matrix [1, 3] (template = source + pred_t)
-
-    # Euler distance between ground truth translation and predicted translation.
-    igt_t = -np.matmul(igt_R.T, igt_t.T).T  # gt translation vector (source -> template)
-    translation_error = np.sqrt(np.sum(np.square(igt_t - pred_t)))
-
-    # Convert matrix remains to axis angle representation and report the angle as rotation error.
-    error_mat = np.dot(igt_R, pred_R)  # matrix remains [3, 3]
-    _, angle = transforms3d.axangles.mat2axangle(error_mat)
-    return translation_error, abs(angle * (180 / np.pi))
-
-
-def compute_accuracy(igt_R, pred_R, igt_t, pred_t):
-    errors_temp = []
-    for igt_R_i, pred_R_i, igt_t_i, pred_t_i in zip(igt_R, pred_R, igt_t, pred_t):
-        errors_temp.append(find_errors(igt_R_i, pred_R_i, igt_t_i, pred_t_i))
-    return np.mean(errors_temp, axis=0)
-
-
 def test_one_epoch(device, model, test_loader, args):
     model.eval()
     test_loss = 0.0
