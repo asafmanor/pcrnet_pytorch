@@ -13,7 +13,7 @@ from tqdm import tqdm
 from pcrnet.data_utils import ModelNet40Data, RegistrationData
 from pcrnet.losses import ChamferDistanceLoss
 from pcrnet.models import PointNet, iPCRNet
-from samplenet import SampleNet, sputils
+from samplenet import SampleNet, sputils, FPSSampler
 
 
 def _init_(args):
@@ -376,7 +376,7 @@ def main():
         sampler = SampleNet(
             args.num_out_points,
             args.bottleneck_size,
-            args.group_size,
+            args.projection_group_size,
             skip_projection=args.skip_projection,
             input_shape="bnc",
             output_shape="bnc",
@@ -402,7 +402,13 @@ def main():
 
     if args.pretrained:
         assert os.path.isfile(args.pretrained)
-        model.load_state_dict(torch.load(args.pretrained, map_location="cpu"))
+        missing_keys, unexpected_keys = model.load_state_dict(
+            torch.load(args.pretrained, map_location="cpu"), strict=False)
+        filtered_missing_keys = [x for x in missing_keys if not x.startswith("sampler")]
+        if len(filtered_missing_keys) != 0:
+            raise RuntimeError(f"Found missing keys in checkpoint: {filtered_missing_keys}")
+        if len(unexpected_keys) != 0:
+            raise RuntimeError(f"Found missing keys in model: {unexpected_keys}")
     model.to(args.device)
 
     if args.eval:

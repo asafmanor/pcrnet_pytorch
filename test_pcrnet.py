@@ -2,7 +2,7 @@ import os
 
 import numpy
 import numpy as np
-import open3d as o3d
+# import open3d as o3d
 import torch
 import torch.utils.data
 import transforms3d
@@ -12,22 +12,22 @@ from tqdm import tqdm
 from pcrnet.data_utils import ModelNet40Data, RegistrationData
 from pcrnet.losses import ChamferDistanceLoss
 from pcrnet.models import PointNet, iPCRNet
-from train_pcrnet import SampleNet, do_samplenet_magic
+from train_pcrnet import FPSSampler, SampleNet, do_samplenet_magic
 from train_pcrnet import options as train_options
 from train_pcrnet import sputils
 
 
-def display_open3d(template, source, transformed_source):
-    template_ = o3d.geometry.PointCloud()
-    source_ = o3d.geometry.PointCloud()
-    transformed_source_ = o3d.geometry.PointCloud()
-    template_.points = o3d.utility.Vector3dVector(template)
-    source_.points = o3d.utility.Vector3dVector(source + np.array([0, 0, 0]))
-    transformed_source_.points = o3d.utility.Vector3dVector(transformed_source)
-    template_.paint_uniform_color([1, 0, 0])
-    source_.paint_uniform_color([0, 1, 0])
-    transformed_source_.paint_uniform_color([0, 0, 1])
-    o3d.visualization.draw_geometries([template_, source_, transformed_source_])
+# def display_open3d(template, source, transformed_source):
+#     template_ = o3d.geometry.PointCloud()
+#     source_ = o3d.geometry.PointCloud()
+#     transformed_source_ = o3d.geometry.PointCloud()
+#     template_.points = o3d.utility.Vector3dVector(template)
+#     source_.points = o3d.utility.Vector3dVector(source + np.array([0, 0, 0]))
+#     transformed_source_.points = o3d.utility.Vector3dVector(transformed_source)
+#     template_.paint_uniform_color([1, 0, 0])
+#     source_.paint_uniform_color([0, 1, 0])
+#     transformed_source_.paint_uniform_color([0, 0, 1])
+#     o3d.visualization.draw_geometries([template_, source_, transformed_source_])
 
 
 # Find error metrics.
@@ -66,6 +66,7 @@ def test_one_epoch(device, model, test_loader, args):
         template = template.to(device)
         source = source.to(device)
         igt = igt.to(device)
+        igt_t = igt_t.to(device)
 
         # source_original = source.clone()
         # template_original = template.clone()
@@ -80,9 +81,8 @@ def test_one_epoch(device, model, test_loader, args):
                     model, template, source, args
                 )
                 template, source = sampled_data
-        else:
-            # samplenet_loss = torch.tensor(0, dtype=torch.float32)
-            pass
+            elif model.sampler.name == "fps":
+                template, source = model.sampler(template), model.sampler(source)
 
         output = model(template, source)
         est_R = output["est_R"]
@@ -136,7 +136,7 @@ def options():
 def main():
     args = options()
 
-    testset = RegistrationData("PCRNet", ModelNet40Data(train=False), is_testing=True)
+    testset = RegistrationData("PCRNet", ModelNet40Data(train=False, ), is_testing=True)
     test_loader = DataLoader(
         testset,
         batch_size=args.batch_size,
@@ -158,21 +158,18 @@ def main():
         sampler = SampleNet(
             args.num_out_points,
             args.bottleneck_size,
-            args.group_size,
+            args.projection_group_size,
             skip_projection=args.skip_projection,
             input_shape="bnc",
             output_shape="bnc",
         )
-        if args.train_samplenet:
-            sampler.requires_grad_(True)
-            sampler.train()
-        else:
-            sampler.requires_grad_(False)
-            sampler.eval()
+    elif args.sampler == "fps":
+        sampler = FPSSampler(args.num_out_points, permute=True, input_shape="bnc", output_shape="bnc")
     else:
         sampler = None
 
     model.sampler = sampler
+    model = model.to(args.device)
 
     model = model.to(args.device)
 

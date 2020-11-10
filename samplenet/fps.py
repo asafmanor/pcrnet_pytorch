@@ -1,8 +1,8 @@
-import torch
 import warnings
 
-from pointnet2.utils.pointnet2_utils import furthest_point_sample as fps
-from pointnet2.utils.pointnet2_utils import gather_operation as gather
+import torch
+
+import samplenet.ops as ops
 
 
 class FPSSampler(torch.nn.Module):
@@ -27,16 +27,16 @@ class FPSSampler(torch.nn.Module):
         self.output_shape = output_shape
 
     def forward(self, x: torch.Tensor):
-        # x shape should be B x 3 x N
-        if self.permute:
-            _, N, _ = x.shape
-            x = x[:, torch.randperm(N), :]
-
-        idx = fps(x, self.num_out_points)
-
         if self.input_shape == "bnc":
             x = x.permute(0, 2, 1).contiguous()
-        y = gather(x, idx)
+
+        if self.permute:
+            _, _, N = x.shape
+            x = x[:, :, torch.randperm(N)]
+
+        idx = ops.fps(x, self.num_out_points)
+        y = ops.gather(x, idx)
+
         if self.output_shape == "bnc":
             y = y.permute(0, 2, 1).contiguous()
 
