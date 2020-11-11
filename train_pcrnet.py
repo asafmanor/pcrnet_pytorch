@@ -426,11 +426,16 @@ def main():
         assert os.path.isfile(args.pretrained)
         missing_keys, unexpected_keys = model.load_state_dict(
             torch.load(args.pretrained, map_location="cpu"), strict=False)
+
+        if len(missing_keys) != 0:
+            print(f"Found missing keys in checkpoint: {missing_keys}")
+        if len(unexpected_keys) != 0:
+            raise RuntimeError(f"Found missing keys in model: {unexpected_keys}")
+
         filtered_missing_keys = [x for x in missing_keys if not x.startswith("sampler")]
         if len(filtered_missing_keys) != 0:
             raise RuntimeError(f"Found missing keys in checkpoint: {filtered_missing_keys}")
-        if len(unexpected_keys) != 0:
-            raise RuntimeError(f"Found missing keys in model: {unexpected_keys}")
+
     model.to(args.device)
 
     if args.eval:
