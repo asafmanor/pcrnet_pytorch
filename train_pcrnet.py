@@ -117,12 +117,11 @@ def train_one_epoch(device, model, train_loader, optimizer, args):
         template = template - torch.mean(template, dim=1, keepdim=True)
 
         # sampling
-        if model.sampler is not None:
-            if model.sampler.name == "samplenet":
-                samplenet_loss, sampled_data, samplenet_info = do_samplenet_magic(
-                    model, template, source, args
-                )
-                template, source = sampled_data
+        if model.sampler is not None and model.sampler.name == "samplenet":
+            samplenet_loss, sampled_data, samplenet_info = do_samplenet_magic(
+                model, template, source, args
+            )
+            template, source = sampled_data
         else:
             samplenet_loss = torch.tensor(0, dtype=torch.float32)
 
