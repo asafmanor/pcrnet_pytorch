@@ -5,15 +5,16 @@ import numpy
 import numpy as np
 import torch
 import torch.utils.data
+import torchvision
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from pcrnet.data_utils import RegistrationData  # ModelNet40Data
 from pcrnet.data.modelnet_loader_torch import ModelNetCls
+from pcrnet.data_utils import RegistrationData  # ModelNet40Data
 from pcrnet.losses import ChamferDistanceLoss
 from pcrnet.models import PointNet, iPCRNet
-from samplenet import SampleNet, sputils, FPSSampler
+from samplenet import FPSSampler, SampleNet, sputils
 from samplenet.pctransforms import OnUnitCube, PointcloudToTensor
 
 
@@ -313,6 +314,7 @@ def options(parser=None):
         help="use CUDA if available",
     )
 
+    parser.add_argument("--datafolder", default="modelnet40_ply_hdf5_2048", type=str)
     parser.add_argument("--sampler", default=None, type=str)
     parser.add_argument(
         "--train-pcrnet", action="store_true", help="Allow PCRNet training."
@@ -341,8 +343,8 @@ def main():
 
     # trainset = RegistrationData("PCRNet", ModelNet40Data(train=True, download=True))
     # testset = RegistrationData("PCRNet", ModelNet40Data(train=False, download=True))
-    transforms = torchvision.transforms.Compose([PointcloudToTensor(), OnUnitCube()])
 
+    transforms = torchvision.transforms.Compose([PointcloudToTensor(), OnUnitCube()])
     traindata = ModelNetCls(
         args.num_in_points,
         transforms=transforms,
