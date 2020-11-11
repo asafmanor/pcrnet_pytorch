@@ -12,10 +12,9 @@ from tqdm import tqdm
 from pcrnet.data_utils import ModelNet40Data, RegistrationData
 from pcrnet.losses import ChamferDistanceLoss
 from pcrnet.models import PointNet, iPCRNet
-from train_pcrnet import FPSSampler, SampleNet, do_samplenet_magic
+from samplenet import FPSSampler, SampleNet, sputils
+from train_pcrnet import do_samplenet_magic
 from train_pcrnet import options as train_options
-from train_pcrnet import sputils
-
 
 # def display_open3d(template, source, transformed_source):
 #     template_ = o3d.geometry.PointCloud()

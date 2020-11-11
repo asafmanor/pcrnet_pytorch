@@ -5,15 +5,16 @@ import numpy
 import numpy as np
 import torch
 import torch.utils.data
-import transforms3d
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from pcrnet.data_utils import ModelNet40Data, RegistrationData
+from pcrnet.data_utils import RegistrationData  # ModelNet40Data
+from pcrnet.data.modelnet_loader_torch import ModelNetCls
 from pcrnet.losses import ChamferDistanceLoss
 from pcrnet.models import PointNet, iPCRNet
 from samplenet import SampleNet, sputils, FPSSampler
+from samplenet.pctransforms import OnUnitCube, PointcloudToTensor
 
 
 def _init_(args):
@@ -338,8 +339,28 @@ def main():
     textio = IOStream("checkpoints/" + args.exp_name + "/run.log")
     textio.cprint(str(args))
 
-    trainset = RegistrationData("PCRNet", ModelNet40Data(train=True, download=True))
-    testset = RegistrationData("PCRNet", ModelNet40Data(train=False, download=True))
+    # trainset = RegistrationData("PCRNet", ModelNet40Data(train=True, download=True))
+    # testset = RegistrationData("PCRNet", ModelNet40Data(train=False, download=True))
+    transforms = torchvision.transforms.Compose([PointcloudToTensor(), OnUnitCube()])
+
+    traindata = ModelNetCls(
+        args.num_in_points,
+        transforms=transforms,
+        train=True,
+        download=False,
+        folder=args.datafolder,
+    )
+    testdata = ModelNetCls(
+        args.num_in_points,
+        transforms=transforms,
+        train=False,
+        download=False,
+        folder=args.datafolder,
+    )
+
+    trainset = RegistrationData("PCRNet", traindata)
+    testset = RegistrationData("PCRNet", testdata)
+
     train_loader = DataLoader(
         trainset,
         batch_size=args.batch_size,
