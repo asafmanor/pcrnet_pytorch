@@ -135,6 +135,9 @@ def options():
 
 def main():
     args = options()
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
 
     testset = RegistrationData("PCRNet", ModelNet40Data(train=False, ), is_testing=True)
     test_loader = DataLoader(
